@@ -1,0 +1,53 @@
+Enable CFO OPCODE: FFD0
+    OGF: 0x3F
+    OCF: 0x3D0
+    Parameters: 1 byte state
+        Disable CFO    0x00
+        Enable CFO     0x01
+    Return: 1 byte status.
+        HCI_SUCCESS             = 0x00
+
+Get RSSI OPCODE: FFD1
+    OGF: 0x3F
+    OCF: 0x3D1
+    Return: 1 byte status, 1 byte signed RSSI value
+        HCI_SUCCESS             = 0x00
+
+Set AGC OPCODE: FFD2
+    OGF: 0x3F
+    OCF: 0x3D2
+    Parameters: 7 bytes, LSB first
+    Return: 1 byte status
+        HCI_SUCCESS             = 0x00
+
+Restore AGC OPCODE: FFD3
+    OGF: 0x3F
+    OCF: 0x3D3
+    Return: 1 byte status
+        HCI_SUCCESS             = 0x00
+
+Set TX Power OPCODE: FFD4
+    OGF: 0x3F
+    OCF: 0x3D4
+    Parameters: 1 byte level
+    Return: 1 byte status
+        HCI_SUCCESS             = 0x00
+
+Enable TX OPCODE: FFD5
+    OGF: 0x3F
+    OCF: 0x3D5
+    Return: 1 byte status
+        HCI_SUCCESS             = 0x00
+
+Disable TX OPCODE: FFD6
+    OGF: 0x3F
+    OCF: 0x3D6
+    Return: 1 byte status
+        HCI_SUCCESS             = 0x00
+
+Set RFFE REG9 OPCODE: FFD7
+    OGF: 0x3F
+    OCF: 0x3D7
+    Parameters: 1 byte value
+    Return: 1 byte status
+        HCI_SUCCESS             = 0x00

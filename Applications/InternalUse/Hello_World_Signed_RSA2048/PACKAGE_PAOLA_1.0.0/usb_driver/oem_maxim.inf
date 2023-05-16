@@ -1,0 +1,51 @@
+[Version]
+Signature="$Windows NT$"
+Class=Ports
+ClassGuid={4D36E978-E325-11CE-BFC1-08002BE10318}
+Provider=%Maxim%
+LayoutFile=layout.inf
+DriverVer=07/01/2001,5.1.2535.0
+
+[Manufacturer]
+%Maxim%=JIBE_Serial
+%JIBE_Serial%=JIBE_Serial,NT,NTamd64
+
+[Maxim]
+%JIBE_Serial%=JIBE_Serial,NT,NTamd64
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+[JIBE_Serial.NT]
+%DESCRIPTION%=Maxim_SerialInstall,USB\VID_0B6A&PID_0625
+
+[JIBE_Serial.NTamd64]
+%DESCRIPTION%=Maxim_SerialInstall,USB\VID_0B6A&PID_0625
+
+[Maxim_SerialInstall.NT]
+Include=mdmcpq.inf
+CopyFiles=FakeModemCopyFileSection
+AddReg=Maxim_SerialInstall.NT.AddReg
+
+[Maxim_SerialInstall.NT.AddReg]
+HKR,,DevLoader,,*ntkern
+HKR,,NTMPDriver,,usbser.sys
+HKR,,EnumPropPages32,,"MsPorts.dll,SerialPortPropPageProvider"
+
+[Maxim_SerialInstall.NT.Services]
+AddService=usbser, 0x00000002, DriverServiceInst
+
+[DriverServiceInst]
+DisplayName=%SERVICE%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%12%\usbser.sys
+
+[Strings]
+DESCRIPTION = "Maxim USB2UART Emulation"
+SERVICE     = "USB RS-232 Emulation Driver"
+Maxim = "Maxim"
+JIBE_Serial = "JIBE USB Serial Port"
+
+

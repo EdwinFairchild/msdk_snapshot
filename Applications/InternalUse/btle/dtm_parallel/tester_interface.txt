@@ -1,0 +1,50 @@
+Port 0 (Input to the DUT from Tester)
+    bit 0 New Command signal, active low
+
+    bit 1-7 Command
+        0x0     HCI Reset
+        0x1     Enhanced Receiver Test(Channel, PHY)
+        0x2     Enhanced Transmitter Test(Channel, PHY, Payload)
+        0x3     (Packets received)Test End
+        0x4     Enable CFO
+        0x5     Disable CFO
+        0x6     (RSSI)Get RSSI
+        0x7     Set TX Power(Power level)
+        0x8     Enable TX
+        0x9     Disable TX
+        0xA     Set RFFE REG9(Value)
+        0xB     Set RFFE REG12(Value)
+
+    bit 8-15  P0
+
+    bit 16-23 P1
+
+    bit 24-31 P2
+
+Port 1 (Output from the DUT to the tester)
+    bit 0 Return data signal, active low
+
+    bit 1-4 Status
+        0x0     Init
+        0x1     Calibrating
+        0xA     Idle (Calibration Complete)
+        0x3     Error
+
+    bit 5-15   Return value
+
+
+PHY Definitions:
+0x01    LE 1M PHY
+0x02    LE 2M PHY
+0x03    LE Coded PHY S8
+0x04    LE Coded PHY S2
+
+TX Packet Payload:
+0x00    PRBS9 sequence
+0x01    Repeated ‘11110000’
+0x02    Repeated ‘10101010’ 
+0x03    PRBS15 sequence
+0x04    Repeated ‘11111111’
+0x05    Repeated ‘00000000’
+0x06    Repeated ‘00001111’
+0x07    Repeated ‘01010101’

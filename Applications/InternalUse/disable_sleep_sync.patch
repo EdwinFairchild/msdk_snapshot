@@ -1,0 +1,25 @@
+Index: Applications/EvKitExamples/BLE_fit_ds/stack_fit.c
+===================================================================
+--- Applications/EvKitExamples/BLE_fit_ds/stack_fit.c	(revision 57005)
++++ Applications/EvKitExamples/BLE_fit_ds/stack_fit.c	(revision 57118)
+@@ -108,6 +108,12 @@
+     /*schSetupDelayUsec*/       (BB_SCH_SETUP_DELAY_US - 350) /* Set advertising events closer */
+ };
+ 
++const SDMACfg_t _sdma_cfg = {
++    .cbSize = sizeof(SDMACfg_t),
++    .version = 0,
++    .flags = SDMA_CFG_S_SLEEP_SYNC_DISABLED
++};
++
+ /*************************************************************************************************/
+ /*!
+  *  \brief      Initialize stack.
+@@ -149,6 +155,7 @@
+     /* Copy link layer configuration to sdma memory space. */
+     SDMASetBBCfg(&_bb_cfg);
+     SDMASetLLCfg(&_ll_cfg);
++    SDMASetSDMACfg(&_sdma_cfg);
+ #endif /* ENABLE_SDMA_UNIFIED_CONFIG */
+ #endif /* ENABLE_SDMA */
+ 

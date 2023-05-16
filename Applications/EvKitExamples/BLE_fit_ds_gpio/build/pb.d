@@ -1,0 +1,25 @@
+/home/eddie/oldMSDK/Firmware/Applications/EvKitExamples/BLE_fit_ds_gpio/build/pb.o: \
+ ../../../Libraries/Boards/EvKit_V1/../Source/pb.c \
+ /home/eddie/workspace/arm-tools/lib/gcc/arm-none-eabi/10.3.1/include/stddef.h \
+ ../../../Libraries/MAX32665PeriphDriver/Include/mxc_config.h \
+ /home/eddie/oldMSDK/Firmware/Libraries/CMSIS/Device/Maxim/MAX32665/Include/mxc_device.h \
+ /home/eddie/oldMSDK/Firmware/Libraries/CMSIS/Device/Maxim/MAX32665/Include/max32665.h \
+ /home/eddie/workspace/arm-tools/lib/gcc/arm-none-eabi/10.3.1/include/stdint.h \
+ /home/eddie/workspace/arm-tools/arm-none-eabi/include/stdint.h \
+ /home/eddie/workspace/arm-tools/arm-none-eabi/include/machine/_default_types.h \
+ /home/eddie/workspace/arm-tools/arm-none-eabi/include/sys/features.h \
+ /home/eddie/workspace/arm-tools/arm-none-eabi/include/_newlib_version.h \
+ /home/eddie/workspace/arm-tools/arm-none-eabi/include/sys/_intsup.h \
+ /home/eddie/workspace/arm-tools/arm-none-eabi/include/sys/_stdint.h \
+ /home/eddie/oldMSDK/Firmware/Libraries/CMSIS/Include/core_cm4.h \
+ /home/eddie/oldMSDK/Firmware/Libraries/CMSIS/Include/core_cmInstr.h \
+ /home/eddie/oldMSDK/Firmware/Libraries/CMSIS/Include/core_cmFunc.h \
+ /home/eddie/oldMSDK/Firmware/Libraries/CMSIS/Include/core_cm4_simd.h \
+ /home/eddie/oldMSDK/Firmware/Libraries/CMSIS/Device/Maxim/MAX32665/Include/system_max32665.h \
+ ../../../Libraries/MAX32665PeriphDriver/Include/mxc_errors.h \
+ ../../../Libraries/MAX32665PeriphDriver/Include/mxc_pins.h \
+ ../../../Libraries/MAX32665PeriphDriver/Include/gpio.h \
+ /home/eddie/oldMSDK/Firmware/Libraries/CMSIS/Device/Maxim/MAX32665/Include/gpio_regs.h \
+ ../../../Libraries/MAX32665PeriphDriver/Include/mxc_assert.h \
+ ../../../Libraries/Boards/EvKit_V1/../Include/pb.h \
+ ../../../Libraries/MAX32665PeriphDriver/Include/gpio.h

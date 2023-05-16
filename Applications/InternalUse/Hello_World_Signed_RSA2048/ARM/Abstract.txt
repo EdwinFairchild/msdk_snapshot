@@ -1,0 +1,13 @@
+The 'Hello_World' project is a simple program for the MAX32650 and MAX32651
+microcontroller using the Maxim Integrated MAXX32650 Evalutaion Kit Evaluation
+Board.
+
+Example functionality:
+ - Clock Settings:
+   - SYSCLK = 120.00 MHz
+
+ - The message "Hello World!" is displayed on the Evaluation Kit OLED and
+   transmitted via the UART on connector CN1 to a host terminal at 115,200 Baud, 8N1.
+
+Jumper Configuration:
+  No jumper configuration is required for the Hello_World program.

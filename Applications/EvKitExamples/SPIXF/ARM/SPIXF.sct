@@ -1,0 +1,24 @@
+#! armcc -E -I .\..\
+
+;This file has #defines for Memory Regions.
+#include "sct_config.h"  
+
+
+LR_IROM1 FLASH_start__ FLASH_size__  {    ; load region size_region
+  ER_IROM1 FLASH_start__  {  ; load address = execution address
+   *.o (RESET, +First)
+   *(InRoot$$Sections)
+   .ANY (+RO)
+   .ANY (+XO)
+  }
+
+ RW_CODE SPIX_start__ OVERLAY SPIX_size__ { ; RW data
+   *.o(.xip_section)
+ }
+   
+  RW_IRAM1 IRAM_start__ IRAM_size__  {  ; RW data
+   .ANY (+RW +ZI)
+  }
+
+}
+

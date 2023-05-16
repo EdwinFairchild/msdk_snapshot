@@ -1,0 +1,1 @@
+x86_64-w64-mingw32-gcc session_build.c -I../include -I../include/ucl -DWORD32 -lucl -L. -o session_build.exe

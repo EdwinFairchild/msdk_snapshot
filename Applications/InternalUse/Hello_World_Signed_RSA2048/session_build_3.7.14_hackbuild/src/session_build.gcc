@@ -1,0 +1,33 @@
+#
+# Makefile for the IC cryptolib wrapper for PC using GCC-based compilers
+#
+
+CC=	gcc
+CFLAGS=	-O4
+IFLAGS= -I /cygdrive/c/usip-hde-3.0/usip/include -I./ -I ./include
+LFLAGS= -L./ -L./lib
+
+LIBFLAGS= libucl.dll -lic_crypto
+
+OBJ=	session_build.o
+TRACE_OBJ=
+
+#
+# Rules
+#
+
+all:	session_build.exe
+
+#
+# Dependencies
+# 
+
+%.o:	%.c
+	$(CC) $(CFLAGS) $(IFLAGS) -c -o $@ $<
+
+session_build.exe:	$(OBJ)
+	$(CC) $(CFLAGS) $(IFLAGS)  $(LFLAGS) -o session_build.exe $(OBJ) $(LIBFLAGS)
+
+
+# End Of Makefile
+

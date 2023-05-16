@@ -1,0 +1,247 @@
+/*******************************************************************************
+ * Copyright (C) 2019 Maxim Integrated Products, Inc., All Rights Reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included
+ * in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+ * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL MAXIM INTEGRATED BE LIABLE FOR ANY CLAIM, DAMAGES
+ * OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * Except as contained in this notice, the name of Maxim Integrated
+ * Products, Inc. shall not be used except as stated in the Maxim Integrated
+ * Products, Inc. Branding Policy.
+ *
+ * The mere transfer of this software does not imply any licenses
+ * of trade secrets, proprietary technology, copyrights, patents,
+ * trademarks, maskwork rights, or any other form of intellectual
+ * property whatsoever. Maxim Integrated Products, Inc. retains all
+ * ownership rights.
+ *
+ * $Date: 2021-08-03 10:00:38 -0500 (Tue, 03 Aug 2021) $
+ * $Revision: 58925 $
+ *
+ ******************************************************************************/
+#ifndef HCI_DRV_SDMA_H
+#define HCI_DRV_SDMA_H
+
+#include <stdlib.h>
+#include "bb_api.h"
+#include "ll_api.h"
+
+/*************************************************************************************************/
+/*!
+ *  \brief HCI Interface for the SDMA.
+ */
+/*************************************************************************************************/
+
+/**************************************************************************************************
+  Macros
+**************************************************************************************************/
+
+// Send wakeup events to ARM core when set.
+#define SDMA_CFG_F_SLEEP_SYNC_POS 0       /**< SDMA_CFG_F_SLEEP_SYNC Position */
+                                               /** SDMA_CFG_F_SLEEP_SYNC Mask */
+#define SDMA_CFG_F_SLEEP_SYNC ((uint32_t)(0x1UL << SDMA_CFG_F_SLEEP_SYNC_POS))
+                                     /** SDMA_CFG_F_SLEEP_SYNC Enabled Value. */
+#define SDMA_CFG_V_SLEEP_SYNC_ENABLED ((uint32_t)(0x0UL))
+/** SDMA_CFG_F_SLEEP_SYNC Enabled Value, shifted to appropriate bit position. */
+#define SDMA_CFG_S_SLEEP_SYNC_ENABLED ((uint32_t)(SDMA_CFG_V_SLEEP_SYNC_ENABLED << SDMA_CFG_F_SLEEP_SYNC_POS))
+                                    /** SDMA_CFG_F_SLEEP_SYNC Disabled Value. */
+#define SDMA_CFG_V_SLEEP_SYNC_DISABLED ((uint32_t)(0x1UL))
+                                     /** SDMA_CFG_F_SLEEP_SYNC Disabled Value,
+                                       * shifted to appropriate bit position. */
+#define SDMA_CFG_S_SLEEP_SYNC_DISABLED ((uint32_t)(SDMA_CFG_V_SLEEP_SYNC_DISABLED << SDMA_CFG_F_SLEEP_SYNC_POS))
+
+/**************************************************************************************************
+  Data Types
+**************************************************************************************************/
+
+/**
+ * @brief Data type used to allow SDMA to be configured for backwards compatiblity without
+ * previous application layers.
+ *
+ * @warning Generally, this should only be used for options that affect
+ * low level communication between SDMA and ARM (eg. synchronization of
+ * sleep modes). Higher level configuration should be performed using
+ * vendor specific HCI configuration commands. */
+typedef struct
+{
+    size_t cbSize; /**< @brief Set to the size of the structure. For future compatiblity. */
+    uint32_t version; /**< @brief Present for future use. Always set to 0. */
+    uint32_t flags; /**< @brief Enables specified configurable options. */
+} SDMACfg_t;
+
+/**
+ * @brief Data type used to collect low level SDMA diagnostic counters.
+ *
+ * @warning Generally, this should only be used for options that affect
+ * low level communication between SDMA and ARM (eg. synchronization of
+ * sleep modes). Higher level configuration should be performed using
+ * vendor specific HCI configuration commands. */
+typedef struct
+{
+    uint32_t nSleepTick;
+    uint32_t nBootCount;
+    size_t pfnLastShCall;
+} SDMADiag_t;
+
+/**
+ * @brief The hook function signature used to notify the application about an SDMA interrupt. */
+typedef void (* pfnSDMA0IRQHook_t)(void *);
+
+/**************************************************************************************************
+  Global Variables
+**************************************************************************************************/
+
+#define SDMA_DIAG ((SDMA_DIAG_t)(&sdma_data[SDMA_SDMA_DIAG_OFFSET]))
+
+#ifdef ENABLE_SDMA
+
+/*************************************************************************************************/
+/*!
+ *  \fn         hciDrvInit
+ *
+ *  \brief      Initialize the HCI interface.
+ *
+ *  \return     None.
+ */
+/*************************************************************************************************/
+void hciDrvInit(void);
+
+/*************************************************************************************************/
+/*!
+ *  \fn         hciDrvShutdown
+ *
+ *  \brief      Shutdown the HCI interface.
+ *
+ *  \return     None.
+ */
+/*************************************************************************************************/
+void hciDrvShutdown(void);
+
+/*************************************************************************************************/
+/*!
+ *  \fn         SDMAGetWakeupTime
+ *
+ *  \brief      Get the SDMA's desired wakeup timer compare value. 
+ *
+ *  \return     WUT CMP value to wakeup SDMA.
+ */
+/*************************************************************************************************/
+uint32_t SDMAGetWakeupTime(void);
+
+/*************************************************************************************************/
+/*!
+ *  \fn         SDMASetWakeupFlag
+ *
+ *  \brief      Set the wakeup flag in the byte offset pos. 
+ *
+ *  \return     None.
+ */
+/*************************************************************************************************/
+void SDMASetARMFlag(uint8_t flag);
+
+/*************************************************************************************************/
+/*!
+ *  \fn         SDMAGetWakeupFlag
+ *
+ *  \brief      Get the wakeup flag at byte offset pos. 
+ *
+ *  \return     None.
+ */
+/*************************************************************************************************/
+uint8_t SDMAGetSDMAFlag(void);
+
+/*************************************************************************************************/
+/*!
+ *  \fn         SDMA0_PollHCI
+ *
+ *  \brief      Get the wakeup flag at byte offset pos. 
+ *
+ *  \return     None.
+ */
+/*************************************************************************************************/
+void SDMA0_PollHCI(void);
+
+/*************************************************************************************************/
+/*!
+ *  \fn         SDMASetBBCfg
+ *
+ *  \brief      Overwrite the built in sdma BB config.
+ *
+ *  \return     None.
+ */
+/*************************************************************************************************/
+void SDMASetBBCfg(const BbRtCfg_t * p_bb_cfg);
+
+/*************************************************************************************************/
+/*!
+ *  \fn         SDMASetLLCfg
+ *
+ *  \brief      Overwrite the built in sdma LL config.
+ *
+ *  \return     None.
+ */
+/*************************************************************************************************/
+void SDMASetLLCfg(const LlRtCfg_t * p_ll_cfg);
+ 
+/*************************************************************************************************/
+/*!
+ *  \fn         SDMASetSDMACfg
+ *
+ *  \brief      Overwrite the built in sdma low level configuration.
+ *
+ *  \return     None.
+ */
+/*************************************************************************************************/
+size_t SDMASetSDMACfg(const SDMACfg_t * p_sdma_cfg);
+
+/*************************************************************************************************/
+/*!
+ *  \fn         SDMA0RegisterHook
+ *
+ *  \brief      Register an application provided hook function
+ *              to notify the application of SDMA interrupts.
+ *
+ *  \return     None.
+ */
+/*************************************************************************************************/
+void SDMA0RegisterHook(pfnSDMA0IRQHook_t pfnHook, void * pHookArg);
+
+/*************************************************************************************************/
+/*!
+ *  \fn         SDMARestart
+ *
+ *  \brief      Restart the SDMA after a sleep event. 
+ *
+ *  \return     None.
+ */
+/*************************************************************************************************/
+void SDMARestart(void);
+
+/*************************************************************************************************/
+/*!
+ *  \fn         SDMACheckIP
+ *
+ *  \brief      Verifies that the SDMA hasn't jumped to an invalid location.
+ *
+ *  \return     Non-zero if the SDMA is executing with an invalid instruction pointer.
+ */
+/*************************************************************************************************/
+int SDMACheckIP(void);
+
+#endif /* ENABLE_SDMA */
+
+#endif /* HCI_DRV_SDMA_H */

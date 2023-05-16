@@ -1,0 +1,1 @@
+This is a test for ME0X QSPI.  It needs a MX25 chip to talk to.  After the MX25 is either fly wired or connected by PMOD it will just run.

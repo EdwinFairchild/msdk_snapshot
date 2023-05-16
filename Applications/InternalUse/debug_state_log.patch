@@ -1,0 +1,199 @@
+Index: Applications/EvKitExamples/BLE_fit_ds/main.c
+===================================================================
+--- Applications/EvKitExamples/BLE_fit_ds/main.c	(revision 57041)
++++ Applications/EvKitExamples/BLE_fit_ds/main.c	(working copy)
+@@ -99,47 +99,10 @@
+ /// @brief Specifies the LED used to indicate when the part is in background mode.
+ #define BACKGROUND_LED      1
+ 
+-//#define DEBUG_STATE_LOG
+-
+-#ifdef DEBUG_STATE_LOG
+-#define DEBUG_STATE_LOG_SIZE 16
+-#endif /* DEBUG_STATE_LOG */
+-
+ /**************************************************************************************************
+   Data Types
+ **************************************************************************************************/
+ 
+-#ifdef DEBUG_STATE_LOG
+-typedef enum
+-{
+-    STATE_LOG_CORE_ARM,
+-    STATE_LOG_CORE_SDMA,
+-    STATE_LOG_CORE_COUNT
+-} stateLogCore_t;
+-
+-#define STATE_LOG_CORE_STR(e) \
+-    (e == STATE_LOG_CORE_ARM) ? "ARM" : \
+-    (e == STATE_LOG_CORE_SDMA) ? "SDMA" : \
+-    "unknown"
+-
+-typedef struct
+-{
+-    stateLogCore_t eCore;
+-    uint8_t state;
+-} stateLogEntry_t;
+-
+-typedef struct
+-{
+-    size_t idxBegin;
+-    size_t idxEnd;
+-    stateLogEntry_t aEntries[DEBUG_STATE_LOG_SIZE];
+-    uint8_t aCurState[STATE_LOG_CORE_COUNT];
+-} stateLog_t;
+-
+-#define STATE_LOG_ITER_INC(iter) \
+-    iter = ((iter >= DEBUG_STATE_LOG_SIZE) ? 0 : (iter + 1))
+-#endif /* DEBUG_STATE_LOG */
+-
+ /**************************************************************************************************
+   Local Variables
+ **************************************************************************************************/
+@@ -161,10 +124,6 @@
+     { 512,  4 }
+ };
+ 
+-#ifdef DEBUG_STATE_LOG
+-static stateLog_t stateLog; 
+-#endif /* DEBUG_STATE_LOG */
+-
+ #ifdef ENABLE_SDMA
+ static int bNeedTransition;
+ #endif /* ENABLE_SDMA */
+@@ -173,86 +132,6 @@
+   Functions
+ **************************************************************************************************/
+ 
+-#ifdef DEBUG_STATE_LOG
+-static void printStateLogHeader(void)
+-{
+-    printf("+---+--------+-------+\n");
+-    printf("| # | CORE   | STATE |\n");
+-    printf("|---+--------+-------|\n");
+-}
+-
+-static void printStateLogFooter(void)
+-{
+-    printf("+---+--------+-------+\n");
+-}
+-
+-static void printStateLogEntry(unsigned index, stateLogEntry_t * pEntry)
+-{
+-    printf("| %-2d| %-7s|   %02X  |\n", index, STATE_LOG_CORE_STR(pEntry->eCore), pEntry->state);
+-}
+-
+-static void printStateLog(stateLog_t * pStateLog)
+-{
+-    size_t index, iter;
+-
+-    // Print state log as a table.
+-    printStateLogHeader();
+-    for (iter = pStateLog->idxBegin, index = 0;
+-            iter != pStateLog->idxEnd;
+-            STATE_LOG_ITER_INC(iter), ++ index)
+-    {
+-        printStateLogEntry(index, &(pStateLog->aEntries[iter]));
+-    }
+-    printStateLogFooter();
+-
+-    // Flush log.
+-    pStateLog->idxBegin = pStateLog->idxEnd;
+-
+-    // Flush console.
+-    fflush(stdout);
+-    UART_PrepForSleep(MXC_UART_GET_UART(CONSOLE_UART));
+-}
+-
+-static void logStateEntry(stateLog_t * pStateLog, stateLogCore_t eCore, uint8_t state)
+-{
+-    size_t idxNew, idxEnd;
+-    stateLogEntry_t * pEntry;
+-
+-    // If the state hasn't changed, don't log.
+-    if (pStateLog->aCurState[(unsigned int) eCore] != state)
+-    {
+-        // Calculate new iterators.
+-        idxNew = pStateLog->idxEnd;
+-        idxEnd = idxNew;
+-        STATE_LOG_ITER_INC(idxEnd);
+-
+-        // Truncate table if required.
+-        if (idxEnd == pStateLog->idxBegin)
+-        {
+-            STATE_LOG_ITER_INC(pStateLog->idxBegin);
+-        }
+-
+-        // Populate new entry.
+-        pEntry = &(pStateLog->aEntries[idxNew]);
+-        pEntry->eCore = eCore;
+-        pEntry->state = state;
+-
+-        // Set new state.
+-        pStateLog->aCurState[(unsigned int) eCore] = state;
+-
+-        // Commit new entry to table.
+-        pStateLog->idxEnd = idxEnd;
+-    }
+-}
+-
+-static void initStateEntry(stateLog_t * pStateLog, stateLogCore_t eCore, uint8_t state)
+-{
+-    // Force update of state log.
+-    pStateLog->aCurState[(unsigned int) eCore] = state + 1;
+-    logStateEntry(pStateLog, eCore, state);
+-}
+-#endif /* DEBUG_STATE_LOG */
+-
+ /*! \brief  Stack initialization for app. */
+ extern void StackInitFit(void);
+ 
+@@ -481,10 +360,6 @@
+         /* Signal to the SDMA that it is being put to sleep, not being reset outright. */
+         if (bNeedTransition)
+         {
+-#ifdef DEBUG_STATE_LOG
+-            logStateEntry(&stateLog, STATE_LOG_CORE_ARM, ARM_FLAG_SLEEP);
+-            printStateLog(&stateLog);
+-#endif /* DEBUG_STATE_LOG */
+             SDMASetARMFlag(ARM_FLAG_SLEEP | ARM_FLAG_CHANGED);
+             bNeedTransition = 0;
+         }
+@@ -491,9 +366,6 @@
+ 
+         /* Check for an response from the SDMA. */
+         sdmaFlag = SDMAGetSDMAFlag();
+-#ifdef DEBUG_STATE_LOG
+-        logStateEntry(&stateLog, STATE_LOG_CORE_SDMA, sdmaFlag);
+-#endif /* DEBUG_STATE_LOG */
+         if (((sdmaFlag ^ sdmaOldFlag) & SDMA_FLAG_CHANGED) == SDMA_FLAG_CHANGED)
+         {
+             sdmaOldFlag = sdmaFlag;
+@@ -690,12 +562,6 @@
+     printf(" A 10sec delay before starting. (..to allow re-flash)\n");
+     TMR_Delay(OST_TIMER, SEC(INTERVAL_TIME_OST), 0);
+ 
+-#ifdef DEBUG_STATE_LOG
+-    initStateEntry(&stateLog, STATE_LOG_CORE_ARM, ARM_FLAG_INIT);
+-    initStateEntry(&stateLog, STATE_LOG_CORE_SDMA, SDMA_FLAG_INIT);
+-    printStateLog(&stateLog);
+-#endif /* DEBUG_STATE_LOG */
+-
+     /* Trim 32 kHz trim */
+     trimRTC();
+     while(UART_PrepForSleep(MXC_UART_GET_UART(CONSOLE_UART)) != E_NO_ERROR) {}
+@@ -774,9 +640,6 @@
+ #ifdef ENABLE_SDMA_ERROR_REPORTING
+         if (sdmaFlag == SDMA_FLAG_INIT) {
+             sdmaFlag = SDMAGetSDMAFlag();
+-#ifdef DEBUG_STATE_LOG
+-            logStateEntry(&stateLog, STATE_LOG_CORE_SDMA, stateFlag);
+-#endif /* DEBUG_STATE_LOG */
+         }
+         if (sdmaFlag == SDMA_FLAG_ENOMEM) {
+             printf ("SDMA core ran out of allocatable memory.");
+@@ -824,3 +687,4 @@
+   /* Hang here */
+   while(1);
+ }
++

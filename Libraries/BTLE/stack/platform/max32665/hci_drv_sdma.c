@@ -1,0 +1,950 @@
+/*******************************************************************************
+ * Copyright (C) 2016 Maxim Integrated Products, Inc., All Rights Reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included
+ * in all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+ * OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL MAXIM INTEGRATED BE LIABLE FOR ANY CLAIM, DAMAGES
+ * OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * Except as contained in this notice, the name of Maxim Integrated
+ * Products, Inc. shall not be used except as stated in the Maxim Integrated
+ * Products, Inc. Branding Policy.
+ *
+ * The mere transfer of this software does not imply any licenses
+ * of trade secrets, proprietary technology, copyrights, patents,
+ * trademarks, maskwork rights, or any other form of intellectual
+ * property whatsoever. Maxim Integrated Products, Inc. retains all
+ * ownership rights.
+ *
+ * $Date: 2021-08-03 10:00:38 -0500 (Tue, 03 Aug 2021) $
+ * $Revision: 58925 $
+ *
+ ******************************************************************************/
+
+#include <string.h>
+#include "wsf_types.h"
+#include "wsf_cs.h"
+#include "hci_drv.h"
+#include "hci_tr.h"
+#include "sema_regs.h"
+#include "ipc_defs.h"
+#include "max32665.h"
+#include "mcr_regs.h"
+#include "simo_regs.h"
+#include "gcr_regs.h"
+#include "sdma_regs.h"
+#include "hci_drv_sdma.h"
+#include "wut_regs.h"
+#include "wut.h"
+#include "lp.h" /* WFI used when waiting for SDMA to initialize. */
+#include "bb_api.h"
+#include "ll_api.h"
+#include "mxc_sys.h"
+#include "mxc_assert.h"
+
+#ifdef _RTE_
+#include "RTE_Components.h"             // Component selection
+#endif
+
+#if defined(SDMA_ADV)
+#include "sdma_adv_map.inc"
+#elif defined(SDMA_SCN)
+#include "sdma_scn_map.inc"
+#else
+#include "sdma_map.inc"
+#endif
+
+/**************************************************************************************************
+  Macros
+**************************************************************************************************/
+/* OTP Access Control register */
+#define MXC_R_OTP_ACNTL         *((volatile uint32_t*)(0x40029040))
+#define OTP_OFFSET              0x10800400 
+#define OTP_LEN                 0x40
+#define MXC_R_SIR_SHR21_OTP     *((volatile uint32_t*)(0x108001D4))
+#define MXC_R_SIR_SHR23_OTP     *((volatile uint32_t*)(0x108001DC))
+
+#define MIN_DELAY (10UL)
+#define MAX_DELAY (1000UL)
+
+//#define ENABLE_WAIT_FOR_SDMA_INT_SLEEP
+
+#ifdef __CROSSWORKS
+#define ENABLE_WAKEUP_SEM
+#define ENABLE_READ_FSM_SEM
+#define ENABLE_READ_DIRTY_SEM
+//#define ENABLE_READ_BACKOFF
+#else /* __CROSSWORKS */
+//#define ENABLE_WAKEUP_SEM
+//#define ENABLE_READ_FSM_SEM
+//#define ENABLE_READ_DIRTY_SEM
+#define ENABLE_READ_BACKOFF
+#endif /* __CROSSWORKS */
+
+/**************************************************************************************************
+  Global Variables
+**************************************************************************************************/
+
+#ifdef __ICCARM__
+_Pragma("location=\".shared\"") shared_mem_t arm_shared_mem;
+#else
+shared_mem_t __attribute__ ((section (".arm_shared"))) arm_shared_mem;
+#endif
+
+#ifdef __ICCARM__
+_Pragma("location=\".shared\"") shared_mem_t sdma_shared_mem;
+#else
+shared_mem_t __attribute__ ((section (".sdma_shared"))) sdma_shared_mem;
+#endif
+
+#ifdef __ICCARM__
+_Pragma("location=\".bin_shcode\"") uint8_t sdma_shcode[] = {
+#else
+volatile uint8_t __attribute__ ((section (".sdma_shcode"))) sdma_shcode[] = {
+#endif
+#if defined(SDMA_ADV)
+#include "sdma_adv_shcode.inc"
+#elif defined(SDMA_SCN)
+#include "sdma_scn_shcode.inc"
+#else
+#include "sdma_shcode.inc"
+#endif
+};
+
+#ifdef __ICCARM__
+_Pragma("location=\".bin_code\"") uint8_t sdma_code[] = {
+#else
+volatile uint8_t __attribute__ ((section (".sdma_code"))) sdma_code[] = {
+#endif
+#if defined(SDMA_ADV)
+#include "sdma_adv_code.inc"
+#elif defined(SDMA_SCN)
+#include "sdma_scn_code.inc"
+#else
+#include "sdma_code.inc"
+#endif
+};
+
+#ifdef __ICCARM__
+_Pragma("location=\".bin_data\"") uint8_t sdma_data[] = {
+#else
+volatile uint8_t __attribute__ ((section (".sdma_data"))) sdma_data[] = {
+#endif
+#if defined(SDMA_ADV)
+#include "sdma_adv_data.inc"
+#elif defined(SDMA_SCN)
+#include "sdma_scn_data.inc"
+#else
+#include "sdma_data.inc"
+#endif
+};
+
+// SDMA can not read from OTP, have to copy it into an SRAM section
+#ifdef __ICCARM__
+_Pragma("location=\".otp\"") uint8_t otp[OTP_LEN];
+#else
+uint8_t __attribute__ ((section (".otp"))) otp[OTP_LEN];
+#endif
+
+extern void hciTrSerialRxIncoming(uint8_t *pBuf, uint8_t len);
+
+/**************************************************************************************************
+  Local Variables
+**************************************************************************************************/
+
+/**
+ * @brief Count of times that ARM has semaphore protection.
+ * Used to make sure that interrupt handler's
+ * don't get deadlocked by non-interrupt context code. */
+unsigned int nSemLocks = 0;
+
+/**
+ * @brief Used to signal when an SDMA interrupt has occurred. */
+bool_t bHaveSDMAInterrupt;
+
+/**
+ * @brief Used to notify the application that an SDMA interrupt has occurred. */
+static pfnSDMA0IRQHook_t pfnSDMA0IRQHook = NULL;
+
+/**
+ * @brief An optional argument that may be passed to the SDMA IRQ hook. */
+static void * pSDMA0IRQHookArg;
+
+#ifndef ENABLE_READ_DIRTY_SEM
+extern bool_t hciCoreVsGetResetting(void);
+
+#endif /* ENABLE_READ_DIRTY_SEM */
+
+/**
+ * @brief Used to make note of when the SDMA is
+ * up and running without accessing shared memory. */
+unsigned int bHaveSDMAInit = 0;
+
+/******************************************************************************/
+uint32_t SDMAGetWakeupTime(void)
+{
+
+    bool_t retval = FALSE;
+    uint32_t sema_val;
+    uint32_t value = 0;
+#if defined(ENABLE_READ_BACKOFF) && defined(ENABLE_WAKEUP_SEM)
+    unsigned int uDelay = 0;
+    volatile unsigned int iterDelay;
+#endif /* ENABLE_READ_BACKOFF && ENABLE_WAKEUP_SEM*/
+
+    while(!retval) {
+
+        WsfCsEnter();
+
+#ifdef ENABLE_WAKEUP_SEM
+        // Attempt to lock the ARM_SDMA_SEMA
+        // Reading the register does an atomic test and set, returns previous value
+        MXC_ASSERT(nSemLocks == 0);
+        sema_val = MXC_SEMA->semaphores[ARM_SDMA_SEMA];
+        if (!sema_val) nSemLocks ++;
+#else /* ENABLE_WAKEUP_SEM */
+        sema_val = 0;
+#endif /* ENABLE_WAKEUP_SEM */
+
+        // Actually read the wakeup time.
+        if (!sema_val) {
+            value = sdma_shared_mem.state.sdma.wakeupTime;
+            retval = TRUE;
+        }
+
+#ifdef ENABLE_WAKEUP_SEM
+        // Unlock the ARM_SDMA_SEMA
+        if (!sema_val) {
+            MXC_SEMA->semaphores[ARM_SDMA_SEMA] = 0x0;
+            nSemLocks --;
+        }
+        MXC_ASSERT(nSemLocks == 0);
+#endif /* ENABLE_WAKEUP_SEM */
+
+        WsfCsExit();
+
+#if defined(ENABLE_READ_BACKOFF) && defined(ENABLE_WAKEUP_SEM)
+        if (!retval) {
+            if (uDelay == 0)
+                uDelay = MIN_DELAY;
+            else
+                uDelay <<= 1;
+            if (uDelay > MAX_DELAY)
+                uDelay = MAX_DELAY;
+            for (iterDelay = 0; iterDelay < uDelay; iterDelay ++);
+        }
+#endif /* ENABLE_READ_BACKOFF && ENABLE_WAKEUP_SEM*/
+    }
+
+    return value;
+}
+
+
+/******************************************************************************/
+void SDMASetARMFlagDirect(uint8_t flag)
+{
+    uint8_t fsmChanged;
+
+    // Read current changed bit.
+    fsmChanged = (arm_shared_mem.state.arm.fsm & ARM_FLAG_CHANGED);
+
+    // Flip changed bit if requested and apply fsm value.
+    arm_shared_mem.state.arm.fsm = (flag ^ fsmChanged);
+}
+
+/******************************************************************************/
+void SDMASetARMFlag(uint8_t flag)
+{
+    bool_t retval = FALSE;
+    uint32_t sema_val;
+
+    while(!retval) {
+
+        WsfCsEnter();
+
+        // Attempt to lock the ARM_SDMA_SEMA
+        // Reading the register does an atomic test and set, returns previous value
+        MXC_ASSERT(nSemLocks == 0);
+        sema_val = MXC_SEMA->semaphores[ARM_SDMA_SEMA];
+        if (!sema_val) nSemLocks ++;
+
+        if (!sema_val) {
+            // Apply state change.
+            SDMASetARMFlagDirect(flag);
+            retval = TRUE;
+        }
+
+        // Unlock the ARM_SDMA_SEMA
+        if (!sema_val) {
+            MXC_SEMA->semaphores[ARM_SDMA_SEMA] = 0x0;
+            nSemLocks --;
+        }
+        MXC_ASSERT(nSemLocks == 0);
+
+        WsfCsExit();
+    }
+}
+
+/******************************************************************************/
+uint8_t SDMAGetSDMAFlag(void)
+{
+    bool_t retval = FALSE;
+    uint32_t sema_val;
+    uint8_t flag_val;
+#if defined(ENABLE_READ_BACKOFF) && defined(ENABLE_READ_FSM_SEM)
+    unsigned int uDelay = 0;
+    volatile unsigned int iterDelay;
+#endif /* ENABLE_READ_BACKOFF && ENABLE_READ_FSM_SEM*/
+
+    while(!retval) {
+
+        WsfCsEnter();
+
+#ifdef ENABLE_READ_FSM_SEM
+        // Attempt to lock the ARM_SDMA_SEMA
+        // Reading the register does an atomic test and set, returns previous value
+        MXC_ASSERT(nSemLocks == 0);
+        sema_val = MXC_SEMA->semaphores[ARM_SDMA_SEMA];
+        if (!sema_val) nSemLocks ++;
+#else /* ENABLE_READ_FSM_SEM */
+        sema_val = 0;
+#endif /* ENABLE_READ_FSM_SEM */
+
+        if (!sema_val) {
+            flag_val = sdma_shared_mem.state.sdma.fsm;
+            retval = TRUE;
+        }
+
+#ifdef ENABLE_READ_FSM_SEM
+        // Unlock the ARM_SDMA_SEMA
+        if (!sema_val) {
+            MXC_SEMA->semaphores[ARM_SDMA_SEMA] = 0x0;
+            nSemLocks --;
+        }
+        MXC_ASSERT(nSemLocks == 0);
+#endif /* ENABLE_READ_FSM_SEM */
+
+        WsfCsExit();
+
+#if defined(ENABLE_READ_BACKOFF) && defined(ENABLE_READ_FSM_SEM)
+        if (!retval) {
+            if (uDelay == 0)
+                uDelay = MIN_DELAY;
+            else
+                uDelay <<= 1;
+            if (uDelay > MAX_DELAY)
+                uDelay = MAX_DELAY;
+            for (iterDelay = 0; iterDelay < uDelay; iterDelay ++);
+        }
+#endif /* ENABLE_READ_BACKOFF && ENABLE_READ_FSM_SEM*/
+    }
+
+#ifndef ENABLE_READ_DIRTY_SEM
+    if ((flag_val & SDMA_FLAG_STATE) != SDMA_FLAG_INIT)
+        bHaveSDMAInit = 1;
+#endif /* ENABLE_READ_DIRTY_SEM */
+
+    return flag_val;
+}
+
+
+/** @brief Waits for SDMA to issue interrupt to
+ * signal that it is ready to receive hci commands. */
+void SDMAWaitForSDMAInt(void)
+{
+    while(bHaveSDMAInterrupt == FALSE) {
+#ifdef ENABLE_WAIT_FOR_SDMA_INT_SLEEP
+        LP_EnterSleepMode();
+#endif /* ENABLE_WAIT_FOR_SDMA_INT_SLEEP */
+    }
+    bHaveSDMAInterrupt = FALSE;
+}
+
+/******************************************************************************/
+#ifdef SDMA_BB_CFG_OFFSET
+void SDMASetBBCfg(const BbRtCfg_t * p_bb_cfg)
+{
+    *((volatile BbRtCfg_t *)&sdma_data[SDMA_BB_CFG_OFFSET]) = *p_bb_cfg;
+}
+#endif /* SDMA_BB_CFG_OFFSET */
+
+/******************************************************************************/
+#ifdef SDMA_LL_CFG_OFFSET
+void SDMASetLLCfg(const LlRtCfg_t * p_ll_cfg)
+{
+    *((volatile LlRtCfg_t *)&sdma_data[SDMA_LL_CFG_OFFSET]) = *p_ll_cfg;
+}
+#endif /* SDMA_LL_CFG_OFFSET */
+
+/******************************************************************************/
+#ifdef SDMA_SDMA_CFG_OFFSET
+/**
+ * @brief Sets the SDMA runtime configuration structure from the ARM.
+ * @param p_sdma_cfg A pointer to the
+ *     configuration structure that the SDMA needs to use.
+ * @return The number of bytes written to the structure. */
+size_t SDMASetSDMACfg(const SDMACfg_t * p_sdma_cfg)
+{
+    size_t cb_sdma_cfg_old;
+    size_t cb_sdma_cfg;
+    volatile size_t * pcb_sdma_cfg;
+    size_t cb_sdma_cfg_cnt;
+    uint8_t * p_sdma_cfg_cnt_in;
+    uint8_t * p_sdma_cfg_cnt_out;
+
+    // First field is a size field. Used to accomodate
+    // future changes in structure size.
+    cb_sdma_cfg = *(size_t *)p_sdma_cfg;
+
+    // Where is the size supposed to be written?
+    pcb_sdma_cfg = (volatile size_t *)&sdma_data[SDMA_SDMA_CFG_OFFSET];
+
+    // Make sure not to use more space than is available.
+    if (cb_sdma_cfg >= sizeof(cb_sdma_cfg))
+    {
+        // Reduce the size field if required.
+        cb_sdma_cfg_old = *(pcb_sdma_cfg);
+        if (cb_sdma_cfg_old < cb_sdma_cfg)
+            cb_sdma_cfg = cb_sdma_cfg_old;
+    }
+
+    // Make sure the sdma size field still has space.
+    // Otherwise, don't copy any bytes.
+    if (cb_sdma_cfg < sizeof(cb_sdma_cfg))
+    {
+        cb_sdma_cfg = 0;
+    }
+
+
+    // Memcopy the structure.
+    if (cb_sdma_cfg >= sizeof(cb_sdma_cfg))
+    {
+        // Write the new sdma configuration structure size.
+        *(pcb_sdma_cfg) = cb_sdma_cfg;
+
+        // Determine the size and location of the provided configuration content.
+        p_sdma_cfg_cnt_in = ((uint8_t *)(p_sdma_cfg) + sizeof(cb_sdma_cfg));
+        cb_sdma_cfg_cnt = cb_sdma_cfg - sizeof(cb_sdma_cfg);
+
+        // Determine where the configuration content is to be written.
+        p_sdma_cfg_cnt_out = (uint8_t *)(pcb_sdma_cfg + 1);
+
+        // Copy the sdma config structure.
+        memcpy(p_sdma_cfg_cnt_out, p_sdma_cfg_cnt_in, cb_sdma_cfg_cnt);
+    }
+
+    return(cb_sdma_cfg);
+}
+#else /* SDMA_SDMA_CFG_OFFSET */
+size_t SDMASetSDMACfg(const SDMACfg_t * p_sdma_cfg)
+{
+    return(0);
+}
+#endif /* SDMA_SDMA_CFG_OFFSET */
+
+/******************************************************************************/
+void sdmaSetIRQ(void)
+{
+    if(MXC_GCR->revision != 0xA1) {
+        // Enable interrupt mux, not for A1
+        MXC_SDMA->int_mux_ctrl0 =
+            (BTLE_TX_DONE_IRQn << MXC_F_SDMA_INT_MUX_CTRL0_INTSEL16_POS) |
+            (BTLE_RX_RCVD_IRQn << MXC_F_SDMA_INT_MUX_CTRL0_INTSEL17_POS) |
+            (BTLE_SFD_DET_IRQn << MXC_F_SDMA_INT_MUX_CTRL0_INTSEL18_POS) |
+            (BTLE_SFD_TO_IRQn << MXC_F_SDMA_INT_MUX_CTRL0_INTSEL19_POS);
+
+        MXC_SDMA->int_mux_ctrl1 =
+            (BTLE_GP_EVENT_IRQn << MXC_F_SDMA_INT_MUX_CTRL1_INTSEL20_POS);
+    } else {
+
+        // Disable interrupt mux and poll BLE interrupts with A1
+        MXC_SDMA->int_mux_ctrl0 = 0;
+        MXC_SDMA->int_mux_ctrl1 = 0;
+    }
+
+    MXC_SDMA->int_mux_ctrl2 = 0;
+    MXC_SDMA->int_mux_ctrl3 = 0;
+}
+
+/******************************************************************************/
+void hciDrvShutdown(void)
+{
+    uint8_t fsmChanged;
+
+    /* Disable SDMA interrupts */
+    NVIC_DisableIRQ(SDMA_IRQn);
+    NVIC_ClearPendingIRQ(SDMA_IRQn);
+
+    /* Disable SDMA, assert reset */
+    MXC_SDMA->ctrl &= ~(MXC_F_SDMA_CTRL_EN);
+
+    /* Gate off the SDMA clock */
+    MXC_GCR->perckcn1 |= MXC_F_GCR_PERCKCN1_SDMAD;
+
+    /* Reset SDMA state */
+
+    // Read current changed bit.
+    fsmChanged = (sdma_shared_mem.state.sdma.fsm & SDMA_FLAG_CHANGED);
+
+    // Flip changed bit if requested and apply fsm value.
+    sdma_shared_mem.state.sdma.fsm = (SDMA_FLAG_SHUTDOWN ^ fsmChanged);
+
+    /* Gate off BTLE clock */
+    MXC_GCR->perckcn1 |= MXC_F_GCR_PERCKCN1_BTLED;
+
+    /* Disable the 32MHz XO */
+    MXC_GCR->clkcn &= ~(MXC_F_GCR_CLKCN_X32M_EN);
+
+    /* Disable BTLE LDOs */
+    MXC_GCR->btleldocn = 0x66;
+
+    /* SDMA has been shutdown. Make a note of this */
+    bHaveSDMAInit = FALSE;
+}
+
+/******************************************************************************/
+void hciDrvInit(void)
+{
+    /* Prevent optimization of sdma_data, sdma_shcode */
+    sdma_data[0] = sdma_data[0];
+    sdma_shcode[0] = sdma_shcode[0];
+
+    /* Make sure that sdma hasn't been started. */
+    if (bHaveSDMAInit != FALSE) {
+        return;
+    }
+    bHaveSDMAInit = TRUE;
+
+    /* SDMA hasn't been started yet, so note that no interrupt has occurred. */
+    bHaveSDMAInterrupt = FALSE;
+
+    /* Disable SDMA, assert reset */
+    MXC_SDMA->ctrl &= ~(MXC_F_SDMA_CTRL_EN);
+
+    /* Enable SDMA clock */
+    MXC_GCR->perckcn1 &= ~(MXC_F_GCR_PERCKCN1_SDMAD);
+
+    /* Setup code address */
+    MXC_SDMA->ip_addr = (uint32_t)&sdma_code;
+
+#ifndef __CROSSWORKS
+    /* Unlock OTP */
+    MXC_R_OTP_ACNTL = 0x3a7f5ca3;
+    MXC_R_OTP_ACNTL = 0xa1e34f20;
+    MXC_R_OTP_ACNTL = 0x9608b2c1;
+
+    /* Copy the OTP into the OTP memory section */
+    memcpy((void*)otp, (void*)OTP_OFFSET, OTP_LEN-2);
+    otp[OTP_LEN-2] = MXC_R_SIR_SHR21_OTP;
+    otp[OTP_LEN-1] = MXC_R_SIR_SHR23_OTP;
+#endif
+
+    // Disable ARM BLE interrupts
+    NVIC_DisableIRQ(BTLE_TX_DONE_IRQn);
+    NVIC_DisableIRQ(BTLE_RX_RCVD_IRQn);
+    NVIC_DisableIRQ(BTLE_RX_ENG_DET_IRQn);
+    NVIC_DisableIRQ(BTLE_SFD_DET_IRQn);
+    NVIC_DisableIRQ(BTLE_SFD_TO_IRQn);
+    NVIC_DisableIRQ(BTLE_GP_EVENT_IRQn);
+    NVIC_DisableIRQ(BTLE_CFO_IRQn);
+    NVIC_DisableIRQ(BTLE_SIG_DET_IRQn);
+    NVIC_DisableIRQ(BTLE_AGC_EVENT_IRQn);
+    NVIC_DisableIRQ(BTLE_RFFE_SPIM_IRQn);
+    NVIC_DisableIRQ(BTLE_TX_AES_IRQn);
+    NVIC_DisableIRQ(BTLE_RX_AES_IRQn);
+    NVIC_DisableIRQ(BTLE_INV_APB_ADDR_IRQn);
+    NVIC_DisableIRQ(BTLE_IQ_DATA_VALID_IRQn);
+
+    sdmaSetIRQ();
+
+    // Initialize the SDMA shared memory segment
+    // Note: semaphore protection not needed here since SDMA isn't running.
+    memset((void*)arm_shared_mem.hci.data, 0, sizeof(arm_shared_mem.hci.data));
+    arm_shared_mem.hci.dirty = 1;
+    arm_shared_mem.hci.len = 0;
+
+    SDMASetARMFlagDirect(ARM_FLAG_INIT);
+
+    // Set all semaphores before starting SDMA.
+    MXC_ASSERT(nSemLocks == 0);
+    MXC_SEMA->semaphores[ARM_SDMA_SEMA] = 1;
+    nSemLocks = 1;
+
+    /* Enable SDMA */
+    MXC_SDMA->ctrl |= MXC_F_SDMA_CTRL_EN;
+
+    // Now we can disable semaphore protection for the shared memory.
+    MXC_SEMA->semaphores[ARM_SDMA_SEMA] = 0;
+    MXC_ASSERT(nSemLocks == 1);
+    nSemLocks = 0;
+
+    // Clear any pending SDMA interrupts
+    MXC_SDMA->irq_flag = 0x1;
+    NVIC_ClearPendingIRQ(SDMA_IRQn);
+
+    // Enable interrupt from SDMA
+    MXC_SDMA->irq_ie = 1;
+    NVIC_EnableIRQ(SDMA_IRQn);
+
+    // Wait for SDMA to signal that it is running.
+    SDMAWaitForSDMAInt();
+
+    // Make sure the SDMA is executing instructions from sdma_code
+    if (SDMACheckIP()) {
+        MXC_ASSERT(((void)"SDMA has invalid IP.", 0));
+    }
+}
+
+/******************************************************************************/
+uint16_t hciDrvWrite(uint8_t type, uint16_t len, uint8_t *pData)
+{
+    uint16_t len_written = 0;
+    uint32_t sema_val = 1;
+    uint8_t sdmaFlag;
+    int dirty;
+    int bWriteCompleted = 0;
+#ifndef ENABLE_READ_DIRTY_SEM
+    bool_t bUseDirtySem = 0;
+#endif /* ENABLE_READ_DIRTY_SEM */
+#if defined(ENABLE_READ_BACKOFF) && defined(ENABLE_READ_DIRTY_SEM)
+    unsigned int uDelay = 0;
+    volatile unsigned int iterDelay;
+#endif /* ENABLE_READ_BACKOFF && ENABLE_READ_DIRTY_SEM */
+
+    // Add 1 byte for type
+    len++;
+
+    WsfCsEnter();
+
+    sdmaFlag = SDMAGetSDMAFlag();
+    if ((sdmaFlag & SDMA_FLAG_STATE) == SDMA_FLAG_SLEEPING) {
+        SDMARestart();
+    }
+
+#ifndef ENABLE_READ_DIRTY_SEM
+    // What kind of access is required for dirty semaphore.
+    if (!bHaveSDMAInit)
+    {
+        bUseDirtySem = 1;
+    }
+    else if (hciCoreVsGetResetting())
+    {
+        bUseDirtySem = 1;
+    }
+#endif /* ENABLE_READ_DIRTY_SEM */
+
+    // Assume dirty bit hasn't been set initially.
+    dirty = 0;
+    do {
+
+        MXC_ASSERT(nSemLocks == 0);
+        // Attempt to lock the ARM_SDMA_SEMA
+        // Reading the register does an atomic test and set, returns previous value
+#ifdef ENABLE_READ_DIRTY_SEM
+        sema_val = MXC_SEMA->semaphores[ARM_SDMA_SEMA];
+        if (!sema_val) nSemLocks ++;
+#else /* ENABLE_READ_DIRTY_SEM */
+        // SDMA still initializing. All shared memory requires semaphore protection.
+        if (bUseDirtySem)
+        {
+            sema_val = MXC_SEMA->semaphores[ARM_SDMA_SEMA];
+            if (!sema_val) nSemLocks ++;
+        }
+#endif /* ENABLE_READ_DIRTY_SEM */
+
+        // Read the dirty bit if we haven't seen it written to yet.
+        if (!dirty) {
+#ifdef ENABLE_READ_DIRTY_SEM
+            if (!sema_val) dirty = sdma_shared_mem.hci.dirty;
+#else /* ENABLE_READ_DIRTY_SEM */
+            if ((!bUseDirtySem) || (!sema_val)) dirty = sdma_shared_mem.hci.dirty;
+#endif /* ENABLE_READ_DIRTY_SEM */
+        }
+
+        // Write the data to the shared memory segment
+        if (!bWriteCompleted) {
+
+            if(len > SHARED_MEM_DATA_LEN) {
+                len_written = SHARED_MEM_DATA_LEN;
+            } else {
+                len_written = len;
+            }
+
+            // Attempt to lock the ARM_SDMA_SEMA
+            // Reading the register does an atomic test and set, returns previous value
+            if (nSemLocks == 0)
+                sema_val = MXC_SEMA->semaphores[ARM_SDMA_SEMA];
+            else
+                MXC_ASSERT(sema_val == 0);
+            if (!sema_val) nSemLocks ++;
+
+            if (!sema_val) {
+                memcpy((void*)sdma_shared_mem.hci.data,(void*)&type, 1);
+                memcpy((void*)&sdma_shared_mem.hci.data[1], (void*)pData, len_written-1);
+                sdma_shared_mem.hci.len = len_written;
+                sdma_shared_mem.hci.dirty = 0;
+                bWriteCompleted = 1;
+            }
+
+            // Unlock the ARM_SDMA_SEMA
+            if (!sema_val) {
+                if (nSemLocks <= 1)
+                {
+                    MXC_ASSERT(nSemLocks == 1);
+                    MXC_SEMA->semaphores[ARM_SDMA_SEMA] = 0x0;
+                }
+                nSemLocks --;
+            }
+            else
+            {
+                MXC_ASSERT(nSemLocks == 0);
+            }
+        }
+
+#ifdef ENABLE_READ_DIRTY_SEM
+        // Unlock the ARM_SDMA_SEMA
+        if (nSemLocks > 0) {
+            MXC_SEMA->semaphores[ARM_SDMA_SEMA] = 0x0;
+            nSemLocks --;
+        }
+#else
+        // Clear semaphore if SDMA isn't initialized yet.
+        if (bUseDirtySem)
+        {
+            // Unlock the ARM_SDMA_SEMA
+            if (nSemLocks > 0) {
+                MXC_SEMA->semaphores[ARM_SDMA_SEMA] = 0x0;
+                nSemLocks --;
+            }
+        }
+#endif /* ENABLE_READ_DIRTY_SEM */
+
+#if defined(ENABLE_READ_BACKOFF) && defined(ENABLE_READ_DIRTY_SEM)
+        // If still waiting to write, back off so that SDMA can clear dirty bit.
+        if (!bWriteCompleted) {
+            if (uDelay == 0)
+                uDelay = MIN_DELAY;
+            else
+                uDelay <<= 1;
+            if (uDelay > MAX_DELAY)
+                uDelay = MAX_DELAY;
+            for (iterDelay = 0; iterDelay < uDelay; iterDelay ++);
+        }
+#endif /* ENABLE_READ_BACKOFF && ENABLE_READ_DIRTY_SEM */
+    } while(bWriteCompleted  == 0);
+
+    WsfCsExit();
+
+    if (len_written) {
+        // Adjust the len_written that we're returning for they type
+        len_written--;
+
+        // Interrupt the SDMA to signal that there is data to process
+        MXC_SDMA->int_in_ctrl = 0x1;
+    }
+
+    // Give SDMA a chance to process the data.
+    while(MXC_SDMA->int_in_flag & 0x1) {}
+
+    // Wait for SDMA to process the data
+#if defined(ENABLE_READ_BACKOFF) && defined(ENABLE_READ_DIRTY_SEM)
+    uDelay = 0;
+#endif /* ENABLE_READ_BACKOFF && ENABLE_READ_DIRTY_SEM */
+    if (len_written > 0) {
+        dirty = 0;
+        do {
+#ifdef ENABLE_READ_DIRTY_SEM
+            // Attempt to lock the ARM_SDMA_SEMA
+            MXC_ASSERT(nSemLocks == 0);
+            sema_val = MXC_SEMA->semaphores[ARM_SDMA_SEMA];
+            if (!sema_val) nSemLocks ++;
+
+            if (!sema_val) {
+                // Poll dirty bit.
+                dirty = sdma_shared_mem.hci.dirty;
+            }
+            
+            if (!sema_val) {
+                // Release semaphore for dirty bit access.
+                MXC_SEMA->semaphores[ARM_SDMA_SEMA] = 0;
+                nSemLocks --;
+            }
+            MXC_ASSERT(nSemLocks == 0);
+#else /* ENABLE_READ_DIRTY_SEM */
+            dirty = sdma_shared_mem.hci.dirty;
+#endif /* ENABLE_READ_DIRTY_SEM */
+
+            if ((dirty != 0) && (SDMACheckIP())) {
+                len_written = 0; // SDMA hasn't processed message.
+                break;
+            }
+
+#if defined(ENABLE_READ_BACKOFF) && defined(ENABLE_READ_DIRTY_SEM)
+            if (dirty == 0) {
+                if (uDelay == 0)
+                    uDelay = MIN_DELAY;
+                else
+                    uDelay <<= 1;
+                if (uDelay > MAX_DELAY)
+                    uDelay = MAX_DELAY;
+                for (iterDelay = 0; iterDelay < uDelay; iterDelay ++);
+            }
+#endif /* ENABLE_READ_BACKOFF && ENABLE_READ_DIRTY_SEM */
+        } while(dirty == 0);
+    }
+
+    return len_written;
+}
+
+void SDMA0_PollHCI(void)
+{
+    WsfCsEnter();
+
+    if(!arm_shared_mem.hci.dirty) {
+        hciTrSerialRxIncoming((uint8_t*)arm_shared_mem.hci.data, arm_shared_mem.hci.len);
+        arm_shared_mem.hci.dirty = 1;
+    }
+
+    WsfCsExit();
+}
+
+void SDMA0RegisterHook(pfnSDMA0IRQHook_t pfnHook, void * pHookArg)
+{
+    WsfCsEnter();
+    pSDMA0IRQHookArg = pHookArg;
+    pfnSDMA0IRQHook = pfnHook;
+    WsfCsExit();
+}
+
+/******************************************************************************/
+void SDMA0_IRQHandler(void)
+{
+    uint32_t sema_val;
+
+    if (pfnSDMA0IRQHook != NULL) {
+        (pfnSDMA0IRQHook)(pSDMA0IRQHookArg);
+    }
+
+    do {
+        // Attempt to lock the ARM_SDMA_SEMA
+        // Reading the register does an atomic test and set, returns previous value
+        if (nSemLocks == 0) {
+            sema_val = MXC_SEMA->semaphores[ARM_SDMA_SEMA];
+        }
+        else {
+            // If the ARM already has the semaphore, no need to take it again.
+            // Just pretend to take it here.
+            sema_val = 0;
+        }
+        if (!sema_val) nSemLocks ++;
+    } while (sema_val);
+
+    SDMA0_PollHCI();
+
+    // Unlock the ARM_SDMA_SEMA
+    if (nSemLocks > 0) {
+        nSemLocks --;
+
+        // If the ARM hadn't already taken the semaphore, release it here.
+        if (nSemLocks == 0) {
+            MXC_SEMA->semaphores[ARM_SDMA_SEMA] = 0x0;
+        }
+    }
+
+    // Clear the SDMA interrupt
+    MXC_SDMA->irq_flag = 0x1;
+
+    // Also, set a flag if the ARM is waiting for an SDMA interrupt.
+    bHaveSDMAInterrupt = TRUE;
+}
+
+/******************************************************************************/
+/* Restart SDMA after sleep */
+void SDMARestart(void)
+{
+    // Block access to shared memory until SDMA is started.
+    MXC_ASSERT(nSemLocks == 0);
+    MXC_SEMA->semaphores[ARM_SDMA_SEMA] = 1;
+    nSemLocks = 1;
+
+    /* SDMA is no longer initialized. */
+    bHaveSDMAInit = 0;
+
+    /* Reset SDMA */
+    MXC_SDMA->ctrl &= ~(MXC_F_SDMA_CTRL_EN);
+
+    /* Enable SDMA clock */
+    MXC_GCR->perckcn1 &= ~(MXC_F_GCR_PERCKCN1_SDMAD);
+
+    sdmaSetIRQ();
+
+    MXC_SDMA->irq_ie = 0;
+    NVIC_DisableIRQ(SDMA_IRQn);
+
+    /* restart SDMA core */
+    SDMASetARMFlagDirect(ARM_FLAG_SLEEP);  /* SDMA re-start */
+    MXC_SDMA->ip_addr = (uint32_t)&sdma_code;
+    MXC_SDMA->ctrl |= MXC_F_SDMA_CTRL_EN;
+
+    // Now we can disable semaphore protection for the shared 
+    MXC_SEMA->semaphores[ARM_SDMA_SEMA] = 0;
+    nSemLocks = 0;
+
+    // Clear any pending SDMA interrupts
+    MXC_SDMA->irq_flag = 0x1;
+    NVIC_ClearPendingIRQ(SDMA_IRQn);
+
+    // Enable interrupt from SDMA
+    MXC_SDMA->irq_ie = 1;
+    NVIC_EnableIRQ(SDMA_IRQn);
+
+    // Wait for SDMA to signal that it is running.
+    SDMAWaitForSDMAInt();
+}
+
+/******************************************************************************/
+/* Checks that the SDMA is running from a valid location. */
+int SDMACheckIP(void)
+{
+    uint32_t sdmaIP;
+    int error = 0;
+
+    if ((MXC_SDMA->ctrl & MXC_F_SDMA_CTRL_EN) == MXC_F_SDMA_CTRL_EN) {
+        // Read instruction pointer once.
+        sdmaIP = MXC_SDMA->ip;
+
+        // Check each valid section in turn.
+        if ((sdmaIP >= (size_t)sdma_code) && 
+                (sdmaIP < (size_t)&sdma_code[
+                sizeof(sdma_code)/sizeof(sdma_code[0])])) {
+            ; // Running inside sdma code section.
+        }
+        else if ((sdmaIP >= (size_t)sdma_shcode) && 
+                (sdmaIP < (size_t)&sdma_shcode[
+                sizeof(sdma_shcode)/sizeof(sdma_shcode[0])])) {
+            ; // Running inside sdma shared code section.
+            if (bHaveSDMAInit && !hciCoreVsGetResetting()) {
+                // This is an error if the SDMA has indicated that it has been initialized.
+                error = SDMA_FLAG_EINVALIDIP;
+            }
+        }
+        else {
+            error = SDMA_FLAG_EINVALIDIP;
+        }
+    }
+
+    return(error);
+}
